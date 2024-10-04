@@ -13,16 +13,20 @@ import subprocess
 
 from playwright.async_api import async_playwright
 
+# region Configuration
 base_url = 'https://www.computerenhance.com'
 
 # List of URLs separated by new lines
-urls_text = """
-https://www.computerenhance.com/p/waste
+_urls_text = """
+https://www.computerenhance.com/p/q-and-a-63-2024-08-19
 """
 __urls_text = """
+https://www.computerenhance.com/p/waste
+"""
+___urls_text = """
 https://www.computerenhance.com/p/prefetching
 """
-_urls_text = """
+urls_text = """
 https://www.computerenhance.com/p/no-really-why-cant-we-have-raw-udp
 https://www.computerenhance.com/p/the-problem-with-risc-v-v-mask-bits
 https://www.computerenhance.com/p/why-isnt-there-a-createprocess-that
@@ -206,16 +210,20 @@ cookies = {
     "connect.sid": "s%3ARDsTzFN9t5vm2EZz1tsN6TxD6J1DWulF.WR8ldeCmUUkNZwLpOPpX2TFA%2FV04%2FCk7xB5GndMYkZs",
     "cookie_storage_key": "fc096c2a-3f49-46af-8391-9c0f283c0f50"
 }
+cookie_domain = ".computerenhance.com"
 
 log_output_path = f"video_download_log{datetime.now().strftime('%Y-%m-%d %H-%M-%S')}.txt"
 error_output_path = "video_download_error.txt"
 
-load_wait_duration = 0
+is_headless = True
+delay_between_page_loads = 0.1
+is_download_video = False
 
-# Convert the URLs to a list, stripping any extra whitespace
-urls = [url.strip() for url in urls_text.strip().splitlines() if url.strip()]
+
+# endregion
 
 
+# region Error File Handling
 def append_to_log_file(msg):
     with open(log_output_path, "a") as log_output_file:
         log_output_file.write(f"{msg}\n")
@@ -230,9 +238,7 @@ def append_to_error_file(url):
 
 
 def remove_error_for_url(url):
-    print(f"Removing error for {url}")
     # Remove line from error file
-
     if not os.path.exists(error_output_path):
         return
 
@@ -242,9 +248,14 @@ def remove_error_for_url(url):
         for line in lines:
             if line.strip("\n") != url:
                 error_output_file.write(line)
+            else:
+                print(f"Removed error for {url}")
 
 
 def is_url_in_error_file(url):
+    if not os.path.exists(error_output_path):
+        return False
+
     with open(error_output_path, "r") as error_output_file:
         lines = error_output_file.readlines()
         for line in lines:
@@ -253,6 +264,10 @@ def is_url_in_error_file(url):
     return False
 
 
+# endregion
+
+
+# region Utils
 def download_file_if_doesnt_exists(url, directory):
     filename = os.path.basename(url)
     path = os.path.join(directory, filename)
@@ -269,42 +284,65 @@ def download_file_if_doesnt_exists(url, directory):
         else:
             print(f'Failed to download: {filename}')
 
-    return path
+    relative_path = os.path.relpath(str(path))
+
+    return relative_path
 
 
-async def process_and_download_html(file_name, url, soup, page):
-    await load_all_comments(page)
+async def open_new_page(context, url):
+    page = await context.new_page()
+    await page.goto(url)
 
-    full_file_name = f"{file_name}.html"
+    try:
+        await page.goto(url)
+    except Exception as e:
+        append_to_log_file(f"{url}\tERROR\tCouldn't load page\t{e}")
+        append_to_error_file(url)
+        print(f"Failed to load URL: {url}")
+        raise e
 
-    if os.path.exists(full_file_name) and not is_url_in_error_file(url):
-        print(f"Skipping {full_file_name} as it already exists and not in error file.")
-        return
+    soup = await create_soup(page)
 
+    # Check if any element contains "Too Many Requests"
+    if soup.find_all(string=lambda text: "Too Many Requests" in text):
+        print("Error: 'Too Many Requests'")
+        append_to_log_file(f"{url}\tERROR\tToo Many Requests")
+        append_to_error_file(url)
+        return None
+
+    # Do shit to make sure page loaded
+    await page.wait_for_load_state('domcontentloaded')
+    # await page.bring_to_front()
+    # await page.wait_for_timeout(load_wait_duration)
+
+    await asyncio.sleep(delay_between_page_loads)
+
+    return page
+
+
+async def create_soup(page): return BeautifulSoup(await page.content(), 'html.parser')
+
+
+def download_html(soup, file_name_with_extension):
+    with open(file_name_with_extension, 'w', encoding='utf-8') as file:
+        file.write(str(soup))
+        print(f'HTML file saved as: {file_name_with_extension}')
+
+
+async def download_html_assets_and_disable_js(soup):
     # Subdirectories for assets
     css_directory = os.path.join(os.getcwd(), 'css_files')
     img_directory = os.path.join(os.getcwd(), 'img_files')
+
     # Create directories if they don't exist
     os.makedirs(css_directory, exist_ok=True)
     os.makedirs(img_directory, exist_ok=True)
+
     # Download CSS files and replace paths
     for link in soup.find_all('link', rel='stylesheet'):
         css_url = urljoin(base_url, link['href'])
-        # css_filename = os.path.basename(css_url)
-        # css_filepath = os.path.join(css_directory, css_filename)
 
-        # Check if file exists before downloading
         css_filepath = download_file_if_doesnt_exists(css_url, css_directory)
-        # if not os.path.exists(css_filepath):
-        #     response = requests.get(css_url)
-        #     if response.status_code == 200:
-        #         with open(css_filepath, 'wb') as css_file:
-        #             css_file.write(response.content)
-        #         print(f'Downloaded: {css_filename}')
-        #     else:
-        #         print(f'Failed to download: {css_filename}')
-        # else:
-        #     print(f'Skipping (already exists): {css_filename}')
 
         # Update the href in the <link> tag to point to the new local file
         link['href'] = css_filepath
@@ -346,10 +384,30 @@ async def process_and_download_html(file_name, url, soup, page):
         if img.parent.name == 'picture':
             picture_parent = img.parent
             picture_parent.replace_with(img)
-
     # Remove all <script> tags
     for script in soup.find_all('script'):
         script.decompose()
+
+
+# endregion
+
+
+async def process_and_download_html(file_name, context, url):
+    full_file_name = f"{file_name}.html"
+
+    if os.path.exists(full_file_name) and not is_url_in_error_file(url):
+        print(f"Skipping {full_file_name} as it already exists and not in error file.")
+        return True
+
+    page = await open_new_page(context, url)
+
+    if not page:
+        return False
+
+    soup = await create_soup(page)
+    await page.close()
+
+    await download_html_assets_and_disable_js(soup)
 
     # Remove elements with class names starting with "_video-wrapper"
     for video_wrapper in soup.select('[class^="_video-wrapper"]'):
@@ -362,17 +420,91 @@ async def process_and_download_html(file_name, url, soup, page):
     # Remove elements with class names containing "_sidebar_"
     for sidebar_element in soup.find_all(class_=lambda class_name: class_name and '_sidebar_' in class_name):
         sidebar_element.decompose()
+
     # Download the HTML file
-    with open(full_file_name, 'w', encoding='utf-8') as file:
-        file.write(str(soup))
-        print(f'HTML file saved as: {file_name}.html')
+    download_html(soup, full_file_name)
+
+    return True
 
 
-def download_video_file(file_name, url, soup):
+async def download_comments_html(file_name, context, url):
+    full_file_name = f"{file_name}.html"
+
+    if os.path.exists(full_file_name) and not is_url_in_error_file(url):
+        print(f"Skipping {full_file_name} as it already exists and not in error file.")
+        return True
+
+    page = await open_new_page(context, url)
+
+    if not page:
+        return False
+
+    await load_and_expand_all_comments(page)
+
+    soup = await create_soup(page)
+    await page.close()
+
+    # Remove elements with class "main-menu-content"
+    for menu_element in soup.select('.main-menu-content'):
+        menu_element.decompose()
+
+    await download_html_assets_and_disable_js(soup)
+
+    download_html(soup, full_file_name)
+
+    return True
+
+
+async def load_and_expand_all_comments(page):
+    try:
+        # Loop to keep clicking the "Load More" button until it no longer exists
+        while True:
+            # Find and click the button
+            load_more_button = await page.query_selector('button.button.collapsed-reply.outline')
+
+            if load_more_button:
+                # Click the button
+                await load_more_button.click()
+                print("Clicked 'Load More' button")
+
+                # Wait for content to load (adjust as necessary)
+                await page.wait_for_load_state('networkidle')
+                await page.wait_for_timeout(2000)
+            else:
+                print("No more 'Load More' buttons found")
+                break
+
+        # Find all "Expand full comment" elements
+        expand_buttons = await page.query_selector_all('div.show-all-toggle')
+
+        # print count
+        print(f"Found {len(expand_buttons)} 'Expand full comment' elements")
+
+        for button in expand_buttons:
+            if button and await button.is_visible():
+                # Click each button to expand the comment
+                print("Clicking 'Expand full comment'")
+                # Scroll to the button to ensure it's in view
+                # await button.scroll_into_view_if_needed()
+                # await page.evaluate('(button) => button.click()', expand_button)
+                await button.click(force=True)
+                print("Clicked 'Expand full comment' button")
+
+                # Wait a short time for content to expand
+                await page.wait_for_timeout(500)
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+
+async def download_video_file(file_name, context, url):
     if os.path.exists(f"{file_name}.mp4"):
         print(f"Skipping {file_name}.mp4 as it already exists.")
         append_to_log_file(f"{url}\tEXISTS\t{file_name}.mp4")
         return
+
+    page = await open_new_page(context, url)
+    soup = await create_soup(page)
 
     # Find the .m3u8 source URL
     hls_url = None
@@ -428,109 +560,54 @@ def download_video_file(file_name, url, soup):
     return True
 
 
-async def load_all_comments(page):
-    try:
-        # Loop to keep clicking the "Load More" button until it no longer exists
-        while True:
-            # Find and click the button
-            load_more_button = await page.query_selector('button.button.collapsed-reply.outline')
-
-            if load_more_button:
-                # Click the button
-                await load_more_button.click()
-                print("Clicked 'Load More' button")
-
-                # Wait for content to load (adjust as necessary)
-                await page.wait_for_load_state('networkidle')
-                await page.wait_for_timeout(2000)
-            else:
-                print("No more 'Load More' buttons found")
-                break
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
-
-
 async def process():
+    # Append the date and the url list
+    append_to_log_file(f"\n\n---\nStarting new download process. {datetime.now()}\n---\n")
+    append_to_log_file(f"URLs:\n{urls_text}\n")
+
     # Use Playwright to fetch and render each URL
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)  # Use Chromium in headless mode
-        context = await browser.new_context()
+        browser = await p.chromium.launch(
+            headless=is_headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",  # Prevents detection
+                "--no-sandbox",  # Helps with compatibility
+                "--disable-gpu",  # Optional, if headless detection is based on GPU rendering
+            ]
+        )
+
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36"
+        )
 
         # Set cookies in the Playwright context
         for name, value in cookies.items():
-            await context.add_cookies([{'name': name, 'value': value, 'domain': '.computerenhance.com', 'path': '/'}])
+            await context.add_cookies([{'name': name, 'value': value, 'domain': cookie_domain, 'path': '/'}])
+
+        # Convert the URLs to a list, stripping any extra whitespace
+        urls = [url.strip() for url in urls_text.strip().splitlines() if url.strip()]
 
         # Process each URL with index
         for index, url in enumerate(urls):
-            print(f"Processing URL: {url}")
+            print(f"\n> Processing URL: {url}")
 
             file_name = f"{index} - {url.split('/')[-1]}"
 
-            # Open new page
-            page = await context.new_page()
-            comments_page = await context.new_page()
+            comments_file_name = file_name + "_comments"
+            comments_url = url + "/comments"
 
-            # Try Go to the URL
-            try:
-                await page.goto(url)
-            except Exception as e:
-                append_to_log_file(f"{url}\tERROR\tCouldn't load page\t{e}")
-                append_to_error_file(url)
-                print(f"Failed to load URL: {url}")
-                continue
+            is_success = not is_download_video or await download_video_file(file_name, context, url)
 
-            # Try Go to the comments URL
-            try:
-                await comments_page.goto(url + "/comments")
-            except Exception as e:
-                append_to_log_file(f"{url}\tERROR\tCouldn't load page\t{e}")
-                append_to_error_file(url)
-                print(f"Failed to load URL: {url}")
-                continue
+            is_success &= await process_and_download_html(file_name, context, url)
 
-            # Do shit to make sure page loaded
-            await page.wait_for_load_state('networkidle')
-            await page.bring_to_front()
+            is_success &= await download_comments_html(comments_file_name, context, comments_url)
 
-            await comments_page.wait_for_load_state('networkidle')
-            await comments_page.bring_to_front()
-
-            await page.wait_for_timeout(load_wait_duration)
-
-            # Get the rendered HTML content
-            # Parse the HTML content with BeautifulSoup
-            soup = BeautifulSoup(await page.content(), 'html.parser')
-            comment_soup = BeautifulSoup(await comments_page.content(), 'html.parser')
-
-            # Check if any element has class "comment"
-            if not soup.find_all(class_="comment"):
-                append_to_log_file(f"{url}\tWARNING\tNo comment content")
-
-            # Check if any element contains "Too Many Requests"
-            if soup.find_all(string=lambda text: "Too Many Requests" in text):
-                print("Page contains 'Too Many Requests'")
-                append_to_log_file(f"{url}\tERROR\tToo Many Requests")
-                append_to_error_file(url)
-                continue
-            else:
-                print("Page does not contain 'Too Many Requests'")
-
-            # is_success = download_video_file(file_name, url, soup)
-
-            await process_and_download_html(file_name, url, soup, page)
-            await process_and_download_html(file_name + "_comments", url + "/comments", comment_soup, comments_page)
-
-            # if is_success:
-            remove_error_for_url(url)
-
-            await page.close()
+            if is_success:
+                remove_error_for_url(url)
+                remove_error_for_url(comments_url)
 
         # Close the browser
         await browser.close()
 
 
-# Append the date and the url list
-append_to_log_file(f"\n\n---\nStarting new download process. {datetime.now()}\n---\n")
-append_to_log_file(f"URLs:\n{urls_text}\n")
 asyncio.run(process())

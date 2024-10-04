@@ -417,30 +417,29 @@ async def download_video_file(file_name, context, url, active_cookies):
 
 
 async def login_manually(browser, url):
-    async with async_playwright() as p:
-        # Launch the browser
-        # browser = await p.chromium.launch(headless=False)  # Keep headless=False to allow manual login
-        page = await browser.new_page()
+    # Launch the browser
+    # browser = await p.chromium.launch(headless=False)  # Keep headless=False to allow manual login
+    page = await browser.new_page()
 
-        # Navigate to the login page
-        await page.goto(url)
+    # Navigate to the login page
+    await page.goto(url)
 
-        print("Please complete the login manually...")
+    print("Please complete the login manually...")
 
-        # Wait for user to manually complete login
-        login_url = input("Press enter your login url and press ENTER...\n")
+    # Wait for user to manually complete login
+    login_url = input("Press enter your login url and press ENTER...\n")
 
-        print("Login URL: ", login_url)
+    print("Login URL: ", login_url)
 
-        # Go to the login page
-        await page.goto(login_url)
-        await page.wait_for_load_state('domcontentloaded')
+    # Go to the login page
+    await page.goto(login_url)
+    await page.wait_for_load_state('domcontentloaded')
 
-        # Get cookies after manual login
-        cookies = await page.context.cookies()
-        print("Cookies after login:", cookies)
+    # Get cookies after manual login
+    cookies = await page.context.cookies()
+    print("Cookies after login:", cookies)
 
-        return cookies
+    return cookies
 
 
 async def process():

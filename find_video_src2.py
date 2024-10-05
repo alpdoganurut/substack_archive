@@ -20,7 +20,71 @@ download_directory = "./downloaded_files"
 is_headless = True
 delay_between_page_loads = 0.1
 is_download_video = False
+is_download_comments = True
 is_override_htmls = True
+is_numbered = False
+separate_directories = True
+
+
+def get_args():
+    # Create the parser
+    parser = argparse.ArgumentParser(description="Download HTML content and videos from Substack URLs")
+
+    # Add arguments
+
+    # URLs file path
+    parser.add_argument('-u', '--urls', type=str, default="urls.txt",
+                        help='Path to the file containing URLs. Default is "./urls.txt"')
+    # Download directory
+    parser.add_argument('-dd', '--download-directory', type=str, default="./downloaded_files",
+                        help='Directory to save downloaded files. Default is "./downloaded_files"')
+    # Headless mode
+    parser.add_argument('-nh', '--no-headless', action='store_true', default=False,
+                        help='Show browser window if set. Default is False')
+    # Download videos
+    parser.add_argument('-vd', '--video-download', action='store_true', default=False,
+                        help='Download videos if set. Default is False')
+    # Download comments
+    parser.add_argument('-ncd', '--no-comment-download', action='store_true', default=False,
+                        help='Download comments if set. Default is False')
+    # Override existing HTML files
+    parser.add_argument('-oh', '--override-html', action='store_true', default=False,
+                        help='Override existing HTML files if set. Default is False')
+    # Delay between page loads
+    parser.add_argument('-d', '--delay', type=float, default=0.1,
+                        help='Delay between page loads. Default is 0.1 seconds')
+    # Numbered files
+    parser.add_argument('-n', '--numbered', action='store_true', default=False,
+                        help='Number files if set. Default is False')
+    # No separate directories
+    parser.add_argument('-nsd', '--no-separate-directories', action='store_true', default=False,
+                        help='Do not create separate directories for assets if set. Default is False')
+
+    # Parse the arguments
+    args = parser.parse_args()
+
+    # Access and store the arguments
+    global urls_path, download_directory, is_headless, is_download_video, is_download_comments,\
+        is_override_htmls, delay_between_page_loads, is_numbered
+
+    urls_path = args.urls
+    download_directory = args.download_directory
+    is_headless = not args.no_headless
+    is_download_video = args.video_download
+    is_download_comments = args.no_comment_download
+    is_override_htmls = args.override_html
+    delay_between_page_loads = args.delay
+    is_numbered = args.numbered
+
+    # Print configuration
+    print(f"URLs file path: {urls_path}")
+    print(f"Download directory: {download_directory}")
+    print(f"Headless: {is_headless}")
+    print(f"Download videos: {is_download_video}")
+    print(f"Download comments: {is_download_comments}")
+    print(f"Override HTMLs: {is_override_htmls}")
+    print(f"Delay between page loads: {delay_between_page_loads}")
+    print(f"Numbered files: {is_numbered}")
 
 
 # endregion
@@ -75,7 +139,7 @@ def is_url_in_error_file(url):
 
 
 # region Utils
-def download_file_if_doesnt_exists(url, directory):
+def download_file_if_doesnt_exists(url, directory, access_directory):
     filename = os.path.basename(url)
     path = os.path.join(directory, filename)
     # Sanitize
@@ -91,7 +155,7 @@ def download_file_if_doesnt_exists(url, directory):
         else:
             print(f'Failed to download: {filename}')
 
-    relative_path = os.path.relpath(str(path), download_directory)
+    relative_path = os.path.relpath(str(path), access_directory)
 
     return relative_path
 
@@ -151,17 +215,16 @@ async def open_new_page(context, url):
 async def create_soup(page): return BeautifulSoup(await page.content(), 'html.parser')
 
 
-def download_html(soup, file_name):
-    path = get_absolute_path_for_file_name(file_name)
+def download_html(soup, path):
     with open(path, 'w', encoding='utf-8') as file:
         file.write(str(soup))
         print(f'HTML file saved as: {path}')
 
 
-async def download_html_assets_and_disable_js(url, soup):
+async def download_html_assets_and_disable_js(url, soup, access_directory):
     # Subdirectories for assets
-    css_directory = get_absolute_path_for_file_name('css')
-    img_directory = get_absolute_path_for_file_name('img')
+    css_directory = get_absolute_path('css')
+    img_directory = get_absolute_path('img')
 
     # Create directories if they don't exist
     os.makedirs(css_directory, exist_ok=True)
@@ -173,7 +236,7 @@ async def download_html_assets_and_disable_js(url, soup):
     for link in soup.find_all('link', rel='stylesheet'):
         css_url = urljoin(base_url, link['href'])
 
-        css_filepath = download_file_if_doesnt_exists(css_url, css_directory)
+        css_filepath = download_file_if_doesnt_exists(css_url, css_directory, access_directory)
 
         # Update the href in the <link> tag to point to the new local file
         link['href'] = css_filepath
@@ -196,7 +259,7 @@ async def download_html_assets_and_disable_js(url, soup):
         # Download main src image if available
         if img_url:
             img_url_full = urljoin(base_url, img_url)
-            local_img_path = download_file_if_doesnt_exists(img_url_full, img_directory)
+            local_img_path = download_file_if_doesnt_exists(img_url_full, img_directory, access_directory)
             img['src'] = local_img_path
 
             # If "data-attrs" has a "src" field, update it as well
@@ -228,8 +291,13 @@ def get_base_url(full_url):
     return f"{parsed_url.scheme}://{parsed_url.netloc}/"
 
 
-def get_absolute_path_for_file_name(file_name):
-    return os.path.join(download_directory, file_name)
+def get_absolute_path(file_name, anchor_directory=None):
+    if separate_directories and anchor_directory:
+        item_directory = os.path.join(download_directory, anchor_directory)
+        os.makedirs(item_directory, exist_ok=True)
+        return os.path.join(item_directory, file_name)
+    else:
+        return os.path.join(download_directory, file_name)
 
 
 # endregion
@@ -237,8 +305,10 @@ def get_absolute_path_for_file_name(file_name):
 
 async def process_and_download_html(item_name, context, url):
     file_name = f"{item_name}.html"
+    file_path = get_absolute_path(file_name, item_name)
+    file_directory = os.path.dirname(file_path)
 
-    if not is_override_htmls and os.path.exists(file_name) and not is_url_in_error_file(url):
+    if not is_override_htmls and os.path.exists(file_path) and not is_url_in_error_file(url):
         print(f"Skipping {file_name} as it already exists and not in error file.")
         return True
 
@@ -250,7 +320,7 @@ async def process_and_download_html(item_name, context, url):
     soup = await create_soup(page)
     await page.close()
 
-    await download_html_assets_and_disable_js(url, soup)
+    await download_html_assets_and_disable_js(url, soup, file_directory)
 
     # Remove elements with class names starting with "_video-wrapper"
     for video_wrapper in soup.select('[class^="_video-wrapper"]'):
@@ -265,19 +335,24 @@ async def process_and_download_html(item_name, context, url):
         sidebar_element.decompose()
 
     # Download the HTML file
-    download_html(soup, file_name)
+    download_html(soup, file_path)
 
     return True
 
 
 async def download_comments_html(item_name, context, url):
-    file_name = f"{item_name}.html"
+    comment_item_name = f"{item_name}_comments"
+    comments_url = url + "/comments"
 
-    if not is_override_htmls and os.path.exists(file_name) and not is_url_in_error_file(url):
+    file_name = f"{comment_item_name}.html"
+    file_path = get_absolute_path(file_name, item_name)
+    file_directory = os.path.dirname(file_path)
+
+    if not is_override_htmls and os.path.exists(file_path) and not is_url_in_error_file(url):
         print(f"Skipping {file_name} as it already exists and not in error file.")
         return True
 
-    page = await open_new_page(context, url)
+    page = await open_new_page(context, comments_url)
 
     if not page:
         return False
@@ -291,9 +366,9 @@ async def download_comments_html(item_name, context, url):
     for menu_element in soup.select('.main-menu-content'):
         menu_element.decompose()
 
-    await download_html_assets_and_disable_js(url, soup)
+    await download_html_assets_and_disable_js(comments_url, soup, file_directory)
 
-    download_html(soup, file_name)
+    download_html(soup, file_path)
 
     return True
 
@@ -312,7 +387,7 @@ async def load_and_expand_all_comments(page):
 
                 # Wait for content to load (adjust as necessary)
                 await page.wait_for_load_state('networkidle')
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(500)
             else:
                 print("No more 'Load More' buttons found")
                 break
@@ -328,12 +403,11 @@ async def load_and_expand_all_comments(page):
                 # Click each button to expand the comment
                 print("Clicking 'Expand full comment'")
                 # Scroll to the button to ensure it's in view
-                # await button.scroll_into_view_if_needed()
-                # await page.evaluate('(button) => button.click()', expand_button)
                 await button.click(force=True)
                 print("Clicked 'Expand full comment' button")
 
                 # Wait a short time for content to expand
+                await page.wait_for_load_state('networkidle')
                 await page.wait_for_timeout(500)
 
     except Exception as e:
@@ -342,7 +416,8 @@ async def load_and_expand_all_comments(page):
 
 async def download_video_file(item_name, context, url):
     file_name = f"{item_name}.mp4"
-    if os.path.exists(file_name):
+    output_file = get_absolute_path(file_name, item_name)
+    if os.path.exists(output_file):
         print(f"Skipping {item_name}.mp4 as it already exists.")
         append_to_log_file(f"{url}\tEXISTS\t{item_name}.mp4")
         return True
@@ -361,9 +436,6 @@ async def download_video_file(item_name, context, url):
     for source in sources:
         if source.get('type') == 'application/x-mpegURL':
             hls_url = source.get('src')
-            # If the URL is relative, make it absolute
-            # if not hls_url.startswith('http'):
-            # hls_url = os.path.join(base_url, hls_url)
             hls_url = get_base_url(url) + hls_url
             break
 
@@ -380,7 +452,6 @@ async def download_video_file(item_name, context, url):
             print(f".m3u8 file saved as: {m3u8_file}")
 
             # Convert the .m3u8 to a single video file using ffmpeg
-            output_file = get_absolute_path_for_file_name(file_name)
             print(f"Converting {m3u8_file} to {output_file} using ffmpeg...")
             command = [
                 "ffmpeg",
@@ -455,50 +526,6 @@ async def set_working_directory_for_executable():
     print(current_directory)
 
 
-def get_args():
-    # Create the parser
-    parser = argparse.ArgumentParser(description="Download HTML content and videos from Substack URLs")
-
-    # Add arguments
-
-    # URLs file path
-    parser.add_argument('-u', '--urls', type=str, default="urls.txt",
-                        help='Path to the file containing URLs. Default is "./urls.txt"')
-    # Download directory
-    parser.add_argument('-dd', '--download-directory', type=str, default="./downloaded_files",
-                        help='Directory to save downloaded files. Default is "./downloaded_files"')
-    # Headless mode
-    parser.add_argument('-hd', '--no-headless', action='store_true', default=False,
-                        help='Show browser window if set. Default is False')
-    # Download videos
-    parser.add_argument('-vd', '--video-download', action='store_true', default=False,
-                        help='Download videos if set. Default is False')
-    # Override existing HTML files
-    parser.add_argument('-oh', '--override-html', action='store_true', default=False,
-                        help='Override existing HTML files if set. Default is False')
-    # Delay between page loads
-    parser.add_argument('-d', '--delay', type=float, default=0.1,
-                        help='Delay between page loads. Default is 0.1 seconds')
-
-    # Parse the arguments
-    args = parser.parse_args()
-
-    # Access the arguments
-    global urls_path, download_directory, is_headless, is_download_video, is_override_htmls, delay_between_page_loads
-    urls_path = args.urls
-    download_directory = args.download_directory
-    is_headless = not args.no_headless
-    is_download_video = args.video_download
-    is_override_htmls = args.override_html
-    delay_between_page_loads = args.delay
-
-    # Print configuration
-    print(f"Headless: {is_headless}")
-    print(f"Download videos: {is_download_video}")
-    print(f"Override HTMLs: {is_override_htmls}")
-    print(f"URLs file path: {urls_path}")
-
-
 async def process(urls):
     # Use Playwright to fetch and render each URL
     async with async_playwright() as p:
@@ -512,7 +539,8 @@ async def process(urls):
         )
 
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/90.0.4430.212 Safari/537.36"
         )
 
         await login_manually(context)
@@ -527,17 +555,20 @@ async def process(urls):
 
 async def process_url(context, index, url):
     print(f"\n> Processing URL: {url}")
-    file_name = f"{index} - {url.split('/')[-1]}"
-    comments_file_name = file_name + "_comments"
-    comments_url = url + "/comments"
-    is_success = not is_download_video or await download_video_file(file_name, context, url)
-    is_success &= await process_and_download_html(file_name, context, url)
-    is_success &= await download_comments_html(comments_file_name, context, comments_url)
+    name = url.split('/')[-1]
+
+    if is_numbered:
+        name = f"{index + 1}_{name}"
+
+    print(f"name: {name}")
+
     is_success = True
+    is_success &= not is_download_video or await download_video_file(name, context, url)
+    is_success &= await process_and_download_html(name, context, url)
+    is_success &= is_download_comments or await download_comments_html(name, context, url)
 
     if is_success:
         remove_error_for_url(url)
-        remove_error_for_url(comments_url)
 
 
 async def main():

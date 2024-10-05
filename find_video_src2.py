@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import json
 import sys
@@ -11,11 +12,11 @@ import subprocess
 from playwright.async_api import async_playwright
 
 # region Configuration
-log_output_path = f"video_download_log{datetime.now().strftime('%Y-%m-%d %H-%M-%S')}.txt"
-error_output_path = "video_download_error.txt"
+log_output_path = f"log_output_{datetime.now().strftime('%Y-%m-%d %H-%M-%S')}.txt"
+error_output_path = "errors.txt"
 
 urls_path = "urls.txt"
-
+download_directory = "./downloaded_files"
 is_headless = True
 delay_between_page_loads = 0.1
 is_download_video = False
@@ -53,6 +54,10 @@ def remove_error_for_url(url):
             else:
                 print(f"Removed error for {url}")
 
+    # Delete error file if empty
+    if os.stat(error_output_path).st_size == 0:
+        os.remove(error_output_path)
+
 
 def is_url_in_error_file(url):
     if not os.path.exists(error_output_path):
@@ -86,7 +91,7 @@ def download_file_if_doesnt_exists(url, directory):
         else:
             print(f'Failed to download: {filename}')
 
-    relative_path = os.path.relpath(str(path))
+    relative_path = os.path.relpath(str(path), download_directory)
 
     return relative_path
 
@@ -146,16 +151,17 @@ async def open_new_page(context, url):
 async def create_soup(page): return BeautifulSoup(await page.content(), 'html.parser')
 
 
-def download_html(soup, file_name_with_extension):
-    with open(file_name_with_extension, 'w', encoding='utf-8') as file:
+def download_html(soup, file_name):
+    path = get_absolute_path_for_file_name(file_name)
+    with open(path, 'w', encoding='utf-8') as file:
         file.write(str(soup))
-        print(f'HTML file saved as: {file_name_with_extension}')
+        print(f'HTML file saved as: {path}')
 
 
 async def download_html_assets_and_disable_js(url, soup):
     # Subdirectories for assets
-    css_directory = os.path.join(os.getcwd(), 'css_files')
-    img_directory = os.path.join(os.getcwd(), 'img_files')
+    css_directory = get_absolute_path_for_file_name('css')
+    img_directory = get_absolute_path_for_file_name('img')
 
     # Create directories if they don't exist
     os.makedirs(css_directory, exist_ok=True)
@@ -222,14 +228,18 @@ def get_base_url(full_url):
     return f"{parsed_url.scheme}://{parsed_url.netloc}/"
 
 
+def get_absolute_path_for_file_name(file_name):
+    return os.path.join(download_directory, file_name)
+
+
 # endregion
 
 
-async def process_and_download_html(file_name, context, url):
-    full_file_name = f"{file_name}.html"
+async def process_and_download_html(item_name, context, url):
+    file_name = f"{item_name}.html"
 
-    if not is_override_htmls and os.path.exists(full_file_name) and not is_url_in_error_file(url):
-        print(f"Skipping {full_file_name} as it already exists and not in error file.")
+    if not is_override_htmls and os.path.exists(file_name) and not is_url_in_error_file(url):
+        print(f"Skipping {file_name} as it already exists and not in error file.")
         return True
 
     page = await open_new_page(context, url)
@@ -255,16 +265,16 @@ async def process_and_download_html(file_name, context, url):
         sidebar_element.decompose()
 
     # Download the HTML file
-    download_html(soup, full_file_name)
+    download_html(soup, file_name)
 
     return True
 
 
-async def download_comments_html(file_name, context, url):
-    full_file_name = f"{file_name}.html"
+async def download_comments_html(item_name, context, url):
+    file_name = f"{item_name}.html"
 
-    if not is_override_htmls and os.path.exists(full_file_name) and not is_url_in_error_file(url):
-        print(f"Skipping {full_file_name} as it already exists and not in error file.")
+    if not is_override_htmls and os.path.exists(file_name) and not is_url_in_error_file(url):
+        print(f"Skipping {file_name} as it already exists and not in error file.")
         return True
 
     page = await open_new_page(context, url)
@@ -283,7 +293,7 @@ async def download_comments_html(file_name, context, url):
 
     await download_html_assets_and_disable_js(url, soup)
 
-    download_html(soup, full_file_name)
+    download_html(soup, file_name)
 
     return True
 
@@ -330,10 +340,11 @@ async def load_and_expand_all_comments(page):
         print(f"An error occurred: {e}")
 
 
-async def download_video_file(file_name, context, url):
-    if os.path.exists(f"{file_name}.mp4"):
-        print(f"Skipping {file_name}.mp4 as it already exists.")
-        append_to_log_file(f"{url}\tEXISTS\t{file_name}.mp4")
+async def download_video_file(item_name, context, url):
+    file_name = f"{item_name}.mp4"
+    if os.path.exists(file_name):
+        print(f"Skipping {item_name}.mp4 as it already exists.")
+        append_to_log_file(f"{url}\tEXISTS\t{item_name}.mp4")
         return True
 
     page = await open_new_page(context, url)
@@ -363,13 +374,13 @@ async def download_video_file(file_name, context, url):
 
         if m3u8_response.ok:
             # Save the .m3u8 content to a file
-            m3u8_file = f'{file_name}.m3u8'
+            m3u8_file = f'{item_name}.m3u8'
             with open(m3u8_file, 'wb') as file:
                 file.write(await m3u8_response.body())
             print(f".m3u8 file saved as: {m3u8_file}")
 
             # Convert the .m3u8 to a single video file using ffmpeg
-            output_file = f'{file_name}.mp4'
+            output_file = get_absolute_path_for_file_name(file_name)
             print(f"Converting {m3u8_file} to {output_file} using ffmpeg...")
             command = [
                 "ffmpeg",
@@ -405,6 +416,8 @@ async def login_manually(context):
         # Wait for user to manually complete login
         login_url = input("\nPress enter your login url and press ENTER...\n")
 
+        print(f"\nLogging in..\n")
+
         # Go to the login page
         await page.goto(login_url)
         await page.wait_for_load_state('domcontentloaded')
@@ -423,7 +436,7 @@ async def login_manually(context):
 
     await page.close()
 
-    print("Logged In\n")
+    print("\nLogged In\n")
 
 
 async def set_working_directory_for_executable():
@@ -442,7 +455,94 @@ async def set_working_directory_for_executable():
     print(current_directory)
 
 
-async def process():
+def get_args():
+    # Create the parser
+    parser = argparse.ArgumentParser(description="Download HTML content and videos from Substack URLs")
+
+    # Add arguments
+
+    # URLs file path
+    parser.add_argument('-u', '--urls', type=str, default="urls.txt",
+                        help='Path to the file containing URLs. Default is "./urls.txt"')
+    # Download directory
+    parser.add_argument('-dd', '--download-directory', type=str, default="./downloaded_files",
+                        help='Directory to save downloaded files. Default is "./downloaded_files"')
+    # Headless mode
+    parser.add_argument('-hd', '--no-headless', action='store_true', default=False,
+                        help='Show browser window if set. Default is False')
+    # Download videos
+    parser.add_argument('-vd', '--video-download', action='store_true', default=False,
+                        help='Download videos if set. Default is False')
+    # Override existing HTML files
+    parser.add_argument('-oh', '--override-html', action='store_true', default=False,
+                        help='Override existing HTML files if set. Default is False')
+    # Delay between page loads
+    parser.add_argument('-d', '--delay', type=float, default=0.1,
+                        help='Delay between page loads. Default is 0.1 seconds')
+
+    # Parse the arguments
+    args = parser.parse_args()
+
+    # Access the arguments
+    global urls_path, download_directory, is_headless, is_download_video, is_override_htmls, delay_between_page_loads
+    urls_path = args.urls
+    download_directory = args.download_directory
+    is_headless = not args.no_headless
+    is_download_video = args.video_download
+    is_override_htmls = args.override_html
+    delay_between_page_loads = args.delay
+
+    # Print configuration
+    print(f"Headless: {is_headless}")
+    print(f"Download videos: {is_download_video}")
+    print(f"Override HTMLs: {is_override_htmls}")
+    print(f"URLs file path: {urls_path}")
+
+
+async def process(urls):
+    # Use Playwright to fetch and render each URL
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=is_headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",  # Prevents detection
+                "--no-sandbox",  # Helps with compatibility
+                "--disable-gpu",  # Optional, if headless detection is based on GPU rendering
+            ]
+        )
+
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36"
+        )
+
+        await login_manually(context)
+
+        # Process each URL with index
+        for index, url in enumerate(urls):
+            await process_url(context, index, url)
+
+        # Close the browser
+        await browser.close()
+
+
+async def process_url(context, index, url):
+    print(f"\n> Processing URL: {url}")
+    file_name = f"{index} - {url.split('/')[-1]}"
+    comments_file_name = file_name + "_comments"
+    comments_url = url + "/comments"
+    is_success = not is_download_video or await download_video_file(file_name, context, url)
+    is_success &= await process_and_download_html(file_name, context, url)
+    is_success &= await download_comments_html(comments_file_name, context, comments_url)
+    is_success = True
+
+    if is_success:
+        remove_error_for_url(url)
+        remove_error_for_url(comments_url)
+
+
+async def main():
+    get_args()
+
     # Check if urls file exists
     if not os.path.exists(urls_path):
         print(
@@ -461,47 +561,7 @@ async def process():
     append_to_log_file(f"\n\n---\nStarting new download process. {datetime.now()}\n---\n")
     append_to_log_file(f"URLs:\n{urls_text}\n")
 
-    # Use Playwright to fetch and render each URL
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=is_headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",  # Prevents detection
-                "--no-sandbox",  # Helps with compatibility
-                "--disable-gpu",  # Optional, if headless detection is based on GPU rendering
-            ]
-        )
-
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36"
-        )
-
-        await login_manually(context)
-
-        # for name, value in cookies.items():
-        #     await context.add_cookies([{'name': name, 'value': value, 'domain': cookie_domain, 'path': '/'}])
-
-        # Process each URL with index
-        for index, url in enumerate(urls):
-            print(f"\n> Processing URL: {url}")
-
-            file_name = f"{index} - {url.split('/')[-1]}"
-
-            comments_file_name = file_name + "_comments"
-            comments_url = url + "/comments"
-
-            is_success = not is_download_video or await download_video_file(file_name, context, url)
-
-            is_success &= await process_and_download_html(file_name, context, url)
-
-            is_success &= await download_comments_html(comments_file_name, context, comments_url)
-
-            if is_success:
-                remove_error_for_url(url)
-                remove_error_for_url(comments_url)
-
-        # Close the browser
-        await browser.close()
+    await process(urls)
 
 
-asyncio.run(process())
+asyncio.run(main())

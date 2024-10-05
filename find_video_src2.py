@@ -14,9 +14,10 @@ from playwright.async_api import async_playwright
 # region Configuration
 log_output_path = f"log_output_{datetime.now().strftime('%Y-%m-%d %H-%M-%S')}.txt"
 error_output_path = "errors.txt"
+cookies_path = "cookies.json"
 
 urls_path = "urls.txt"
-download_directory = "./downloaded_files"
+download_directory = "./downloads"
 is_headless = True
 delay_between_page_loads = 0.1
 is_download_video = False
@@ -64,7 +65,7 @@ def get_args():
     args = parser.parse_args()
 
     # Access and store the arguments
-    global urls_path, download_directory, is_headless, is_download_video, is_download_comments,\
+    global urls_path, download_directory, is_headless, is_download_video, is_download_comments, \
         is_override_htmls, delay_between_page_loads, is_numbered
 
     urls_path = args.urls
@@ -78,13 +79,15 @@ def get_args():
 
     # Print configuration
     print(f"URLs file path: {urls_path}")
-    print(f"Download directory: {download_directory}")
+    print(f"Download directory: {os.path.abspath(download_directory)}")
     print(f"Headless: {is_headless}")
     print(f"Download videos: {is_download_video}")
     print(f"Download comments: {is_download_comments}")
     print(f"Override HTMLs: {is_override_htmls}")
     print(f"Delay between page loads: {delay_between_page_loads}")
     print(f"Numbered files: {is_numbered}")
+    print(f"Separate directories: {not args.no_separate_directories}")
+    print("\n")
 
 
 # endregion
@@ -188,10 +191,7 @@ async def open_new_page(context, url):
         append_to_error_file(url)
         return None
 
-    # Find the element with the specified attribute
-    paywall_element = await page.query_selector('[data-component-name="Paywall"]')
-
-    # Attempt to find and click the "Sign in" button
+    # Attempt to find and click the "Sign in" button and click it
     sign_in_button = await page.query_selector('text="Sign in"')  # Using "text" selector to find the button
     if sign_in_button:
         await sign_in_button.click()
@@ -200,6 +200,8 @@ async def open_new_page(context, url):
     # Wait for a possible change in the page after clicking the sign-in button
     await page.wait_for_timeout(3000)  # Wait for 3 seconds or adjust as necessary
 
+    # Find the element with the specified attribute
+    paywall_element = await page.query_selector('[data-component-name="Paywall"]')
     # Check if the paywall element exists
     if paywall_element and await paywall_element.is_visible():
         append_to_log_file(f"{url}\tERROR\tPaywall")
@@ -487,7 +489,7 @@ async def login_manually(context):
         # Wait for user to manually complete login
         login_url = input("\nPress enter your login url and press ENTER...\n")
 
-        print(f"\nLogging in..\n")
+        print(f"\nLogging in..,\n")
 
         # Go to the login page
         await page.goto(login_url)
@@ -507,7 +509,9 @@ async def login_manually(context):
 
     await page.close()
 
-    print("\nLogged In\n")
+    await save_cookies(context)
+
+    print("\nSuccessfully logged in!\n")
 
 
 async def set_working_directory_for_executable():
@@ -524,6 +528,36 @@ async def set_working_directory_for_executable():
     # Now the current directory is set to where the executable was launched
     current_directory = os.getcwd()
     print(current_directory)
+
+
+async def get_is_logged_in(context):
+    page = await context.new_page()
+    await page.goto("https://substack.com/")
+    sign_in_button = await page.query_selector('text="Sign in"')  # Using "text" selector to find the button
+    if sign_in_button:
+        print("Not logged in")
+        return False
+
+    return True
+
+
+async def save_cookies(context):
+    cookies = await context.cookies()
+    with open(cookies_path, "w") as file:
+        json.dump(cookies, file)
+
+
+async def load_cookies(context):
+    if not os.path.exists(cookies_path):
+        return False
+    with open(cookies_path, "r") as file:
+        try:
+            cookies = json.load(file)
+        except json.JSONDecodeError:
+            return False
+
+        await context.add_cookies(cookies)
+    return True
 
 
 async def process(urls):
@@ -543,7 +577,18 @@ async def process(urls):
                        "Chrome/90.0.4430.212 Safari/537.36"
         )
 
-        await login_manually(context)
+        # Load cookies if available
+        cookies_exist = await load_cookies(context)
+
+        if not cookies_exist:
+            print("No cookies found. Logging in manually.")
+            await login_manually(context)
+        else:
+            if not await get_is_logged_in(context):
+                print("Cookies are not valid. Logging in manually.")
+                await login_manually(context)
+            else:
+                print("Logged in using existing cookies")
 
         # Process each URL with index
         for index, url in enumerate(urls):

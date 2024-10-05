@@ -104,6 +104,7 @@ def get_args():
         print("\n")
     else:
         print("Multiple URLs mode")
+        print(f"URLs file path: {os.path.abspath(urls_path)}")
         print("\n")
 
 

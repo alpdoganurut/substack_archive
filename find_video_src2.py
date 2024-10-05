@@ -11,16 +11,17 @@ import subprocess
 
 from playwright.async_api import async_playwright
 
-# region Configuration
+# region Configuration and Arguments
 log_output_path = f"log_output_{datetime.now().strftime('%Y-%m-%d %H-%M-%S')}.txt"
 error_output_path = "errors.txt"
 cookies_path = "cookies.json"
 
+single_url = None
 urls_path = "urls.txt"
 download_directory = "./downloads"
 is_headless = True
 delay_between_page_loads = 0.1
-is_download_video = False
+is_download_video = True
 is_download_comments = True
 is_override_htmls = True
 is_numbered = False
@@ -28,22 +29,30 @@ separate_directories = True
 
 
 def get_args():
+    global single_url, urls_path, download_directory, is_headless, is_download_video, is_download_comments, \
+        is_override_htmls, delay_between_page_loads, is_numbered
     # Create the parser
     parser = argparse.ArgumentParser(description="Download HTML content and videos from Substack URLs")
 
     # Add arguments
 
     # URLs file path
-    parser.add_argument('-u', '--urls', type=str, default="urls.txt",
+    parser.add_argument('-u', '--urls', type=str, default=urls_path,
                         help='Path to the file containing URLs. Default is "./urls.txt"')
+    # Single URL
+    parser.add_argument('-su', '--single-url', type=str, default=single_url,
+                        help='Single URL to download. Overrides the URLs file if set.')
+    # Single URL
+    parser.add_argument('positional-single-url', nargs='?', type=str, default=single_url,
+                        help='Single URL to download. Overrides the URLs file if set.')
     # Download directory
-    parser.add_argument('-dd', '--download-directory', type=str, default="./downloaded_files",
+    parser.add_argument('-dd', '--download-directory', type=str, default=download_directory,
                         help='Directory to save downloaded files. Default is "./downloaded_files"')
     # Headless mode
-    parser.add_argument('-nh', '--no-headless', action='store_true', default=False,
+    parser.add_argument('-nh', '--no-headless', action='store_true', default=not is_headless,
                         help='Show browser window if set. Default is False')
     # Download videos
-    parser.add_argument('-vd', '--video-download', action='store_true', default=False,
+    parser.add_argument('-nvd', '--no-video-download', action='store_true', default=not is_download_video,
                         help='Download videos if set. Default is False')
     # Download comments
     parser.add_argument('-ncd', '--no-comment-download', action='store_true', default=False,
@@ -65,20 +74,20 @@ def get_args():
     args = parser.parse_args()
 
     # Access and store the arguments
-    global urls_path, download_directory, is_headless, is_download_video, is_download_comments, \
-        is_override_htmls, delay_between_page_loads, is_numbered
 
     urls_path = args.urls
+    single_url = args.single_url if args.single_url else getattr(args, 'positional-single-url')
     download_directory = args.download_directory
     is_headless = not args.no_headless
-    is_download_video = args.video_download
+    is_download_video = not args.no_video_download
     is_download_comments = args.no_comment_download
     is_override_htmls = args.override_html
     delay_between_page_loads = args.delay
-    is_numbered = args.numbered
+    is_numbered = args.numbered and not single_url
 
     # Print configuration
     print(f"URLs file path: {urls_path}")
+    print(f"Single URL: {single_url}")
     print(f"Download directory: {os.path.abspath(download_directory)}")
     print(f"Headless: {is_headless}")
     print(f"Download videos: {is_download_video}")
@@ -88,6 +97,14 @@ def get_args():
     print(f"Numbered files: {is_numbered}")
     print(f"Separate directories: {not args.no_separate_directories}")
     print("\n")
+
+    if single_url:
+        print("Single URL mode")
+        print(f"URL: {single_url}")
+        print("\n")
+    else:
+        print("Multiple URLs mode")
+        print("\n")
 
 
 # endregion
@@ -468,6 +485,9 @@ async def download_video_file(item_name, context, url):
             # Append to log_output
             append_to_log_file(f"{url}\tSUCCESS\t{hls_url}\t{output_file}")
             print(f"Video file saved as: {output_file}")
+
+            # Remove the .m3u8 file
+            os.remove(m3u8_file)
         else:
             append_to_log_file(f"{url}\tERROR\t{hls_url}\t{m3u8_response.status_code}")
             append_to_error_file(url)
@@ -489,7 +509,7 @@ async def login_manually(context):
         # Wait for user to manually complete login
         login_url = input("\nPress enter your login url and press ENTER...\n")
 
-        print(f"\nLogging in..,\n")
+        print(f"\nLogging in...\n")
 
         # Go to the login page
         await page.goto(login_url)
@@ -603,14 +623,14 @@ async def process_url(context, index, url):
     name = url.split('/')[-1]
 
     if is_numbered:
-        name = f"{index + 1}_{name}"
+        name = f"{index + 1}-{name}"
 
     print(f"name: {name}")
 
     is_success = True
-    is_success &= not is_download_video or await download_video_file(name, context, url)
     is_success &= await process_and_download_html(name, context, url)
     is_success &= is_download_comments or await download_comments_html(name, context, url)
+    is_success &= not is_download_video or await download_video_file(name, context, url)
 
     if is_success:
         remove_error_for_url(url)
@@ -619,23 +639,28 @@ async def process_url(context, index, url):
 async def main():
     get_args()
 
-    # Check if urls file exists
-    if not os.path.exists(urls_path):
-        print(
-            f"\nERROR: URLs file not found: {urls_path}. "
-            f"Create a txt files containing urls (one per line) and try again.")
-        return
+    if single_url:
+        urls = [single_url]
+    else:
+        # Check if urls file exists
+        if not single_url and not os.path.exists(urls_path):
+            print(
+                f"\nERROR: URLs file not found:  {urls_path}. "
+                f"\nCreate a txt files containing urls (one per line) and try again."
+                f"\nIf you want to download a single URL, provide it as argument or use the --single-url (-su) flag.")
+            return
 
-    # Read urls from file
-    with open(urls_path, 'r') as file:
-        urls_text = file.read()
+        # Read urls from file
+        with open(urls_path, 'r') as file:
+            urls_text = file.read()
 
-    # Convert the URLs to a list, stripping any extra whitespace
-    urls = [url.strip() for url in urls_text.strip().splitlines() if url.strip()]
+        # Convert the URLs to a list, stripping any extra whitespace
+        urls = [url.strip() for url in urls_text.strip().splitlines() if url.strip()]
 
-    # Append the date and the url list
+    # Append the date and the url list to the log file
     append_to_log_file(f"\n\n---\nStarting new download process. {datetime.now()}\n---\n")
-    append_to_log_file(f"URLs:\n{urls_text}\n")
+    # Print urls with newlines
+    append_to_log_file(f"URLs: \n{json.dumps(urls, indent=4)}")
 
     await process(urls)
 

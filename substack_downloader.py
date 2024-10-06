@@ -11,6 +11,8 @@ import subprocess
 
 from playwright.async_api import async_playwright
 
+is_logged_in = False
+
 # region Configuration and Arguments
 log_output_path = f"log_output_{datetime.now().strftime('%Y-%m-%d %H-%M-%S')}.txt"
 error_output_path = "errors.txt"
@@ -182,6 +184,8 @@ def download_file_if_doesnt_exists(url, directory, access_directory):
 
 
 async def open_new_page(context, url):
+    global is_logged_in
+
     page = await context.new_page()
     # page.evaluate('window.blur()')  # Take focus away from the window
 
@@ -199,8 +203,6 @@ async def open_new_page(context, url):
 
     # Do shit to make sure page loaded
     await page.wait_for_load_state('domcontentloaded')
-    # await page.bring_to_front()
-    # await page.wait_for_timeout(load_wait_duration)
 
     # Check if any element contains "Too Many Requests"
     if soup.find_all(string=lambda text: "Too Many Requests" in text):
@@ -209,14 +211,15 @@ async def open_new_page(context, url):
         append_to_error_file(url)
         return None
 
-    # Attempt to find and click the "Sign in" button and click it
-    sign_in_button = await page.query_selector('text="Sign in"')  # Using "text" selector to find the button
-    if sign_in_button:
-        await sign_in_button.click()
-        print(f"Clicked on 'Sign in' button for {url}")
+    if is_logged_in:
+        # Attempt to find and click the "Sign in" button and click it
+        sign_in_button = await page.query_selector('text="Sign in"')  # Using "text" selector to find the button
+        if sign_in_button:
+            await sign_in_button.click()
+            print(f"Clicked on 'Sign in' button for {url} to re sign in")
 
-    # Wait for a possible change in the page after clicking the sign-in button
-    await page.wait_for_timeout(3000)  # Wait for 3 seconds or adjust as necessary
+        # Wait for a possible change in the page after clicking the sign-in button
+        await page.wait_for_timeout(3000)  # Wait for 3 seconds or adjust as necessary
 
     # Find the element with the specified attribute
     paywall_element = await page.query_selector('[data-component-name="Paywall"]')
@@ -318,6 +321,36 @@ def get_absolute_path(file_name, anchor_directory=None):
         return os.path.join(item_directory, file_name)
     else:
         return os.path.join(download_directory, file_name)
+
+
+async def get_is_logged_in(context):
+    page = await context.new_page()
+    await page.goto("https://substack.com/")
+    sign_in_button = await page.query_selector('text="Sign in"')  # Using "text" selector to find the button
+    if sign_in_button:
+        print("Not logged in")
+        return False
+
+    return True
+
+
+async def save_cookies(context):
+    cookies = await context.cookies()
+    with open(cookies_path, "w") as file:
+        json.dump(cookies, file)
+
+
+async def load_cookies(context):
+    if not os.path.exists(cookies_path):
+        return False
+    with open(cookies_path, "r") as file:
+        try:
+            cookies = json.load(file)
+        except json.JSONDecodeError:
+            return False
+
+        await context.add_cookies(cookies)
+    return True
 
 
 # endregion
@@ -505,10 +538,16 @@ async def download_video_file(item_name, context, url):
 async def login_manually(context):
     page = await context.new_page()
 
+    global is_logged_in
+
     is_logged_in = False
     while not is_logged_in:
         # Wait for user to manually complete login
-        login_url = input("\nPress enter your login url and press ENTER...\n")
+        login_url = input("\nCopy-paste your login url and press ENTER. Leave empty to continue without login.\n")
+
+        if not login_url:
+            print("\nContinuing without login\n")
+            break
 
         print(f"\nLogging in...\n")
 
@@ -530,55 +569,9 @@ async def login_manually(context):
 
     await page.close()
 
-    await save_cookies(context)
-
-    print("\nSuccessfully logged in!\n")
-
-
-async def set_working_directory_for_executable():
-    # This function sets the working directory to the location of the executable
-
-    if getattr(sys, 'frozen', False):
-        # Running as a bundled executable
-        base_path = os.path.dirname(sys.executable)
-    else:
-        # Running as a normal script
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    # Set the working directory to the executable's location
-    os.chdir(base_path)
-    # Now the current directory is set to where the executable was launched
-    current_directory = os.getcwd()
-    print(current_directory)
-
-
-async def get_is_logged_in(context):
-    page = await context.new_page()
-    await page.goto("https://substack.com/")
-    sign_in_button = await page.query_selector('text="Sign in"')  # Using "text" selector to find the button
-    if sign_in_button:
-        print("Not logged in")
-        return False
-
-    return True
-
-
-async def save_cookies(context):
-    cookies = await context.cookies()
-    with open(cookies_path, "w") as file:
-        json.dump(cookies, file)
-
-
-async def load_cookies(context):
-    if not os.path.exists(cookies_path):
-        return False
-    with open(cookies_path, "r") as file:
-        try:
-            cookies = json.load(file)
-        except json.JSONDecodeError:
-            return False
-
-        await context.add_cookies(cookies)
-    return True
+    if is_logged_in:
+        await save_cookies(context)
+        print("\nSuccessfully logged in!\n")
 
 
 async def process(urls):
@@ -621,8 +614,8 @@ async def process(urls):
 
 async def process_url(context, index, url):
     print(f"\n> Processing URL: {url}")
-    name = url.split('/')[-1]
 
+    name = url.split('/')[-1]
     if is_numbered:
         name = f"{index + 1}-{name}"
 

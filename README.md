@@ -4,6 +4,11 @@ Download HTML content and videos from Substack URLs.
 
 I've created this to mostly archive `Computer Enhance` posts, but it should work for most Substacks.
 
+Either create a `urls.txt` file with the URLs you want to download, or pass a single URL as argument.
+
+You can use https://github.com/alexferrari88/sbstck-dl to get a list of URLs from a Substack. Existing `urls.txt`
+is a list of `Computer Enhance` posts.
+
 Requires login to download paid content. Copy-paste your login url (which is sent to your email) when asked for.
 Cookies are saved in `cookies.json` for subsequent runs.
 

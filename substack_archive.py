@@ -575,6 +575,7 @@ async def login_manually(context):
 
 
 async def process(urls):
+    global is_logged_in
     # Use Playwright to fetch and render each URL
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -603,6 +604,7 @@ async def process(urls):
                 await login_manually(context)
             else:
                 print("Logged in using existing cookies")
+                is_logged_in = True
 
         # Process each URL with index
         for index, url in enumerate(urls):
